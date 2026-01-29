@@ -1,0 +1,25 @@
+# KIS API 설정 파일
+# 한국투자증권 OpenAPI 인증 정보
+
+# 실전투자
+my_app: "PSpHVc3F5REf8KjVSuI9OgQIjHITKs500RJm"
+my_sec: "36bhyvic+3loZgJvBg15SBqPA0z7VYcryhIImjMYaCrF0l6w0CK/Knu1hlLxSqatAjOc7G5PXaq0eBza2waREFGL33jfezT4jKAiG9HFBYuo1aSOemj2QBXf6E3yBFfCuggJZ6Gya7h5Q44f5hLSYDgQFgHEI7DK/6GTHVU3BqbK2pd0zeQ="
+
+# 계좌번호 앞 8자리
+my_acct_stock: "67494106"
+
+# 계좌번호 뒤 2자리
+my_prod: "01"  # 종합계좌
+
+# HTS ID (체결통보 등에 사용)
+my_htsid: "greedpap"
+
+# API 도메인
+prod: "https://openapi.koreainvestment.com:9443"
+
+# User-Agent
+my_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+# 토큰 (자동으로 관리됨, 직접 수정하지 마세요)
+my_token: ""
+
