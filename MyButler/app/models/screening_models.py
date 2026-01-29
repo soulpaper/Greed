@@ -31,10 +31,16 @@ class SignalType(str, Enum):
 
 class FilterType(str, Enum):
     """필터 유형"""
+    # 기술적 분석 필터
     ICHIMOKU = "ichimoku"
     BOLLINGER = "bollinger"
     MA_ALIGNMENT = "ma_alignment"
     CUP_HANDLE = "cup_handle"
+    # 펀더멘탈 분석 필터
+    ROE = "roe"
+    GPM = "gpm"
+    DEBT = "debt"
+    CAPEX = "capex"
 
 
 class CombineMode(str, Enum):
@@ -83,6 +89,12 @@ class StockSignal(BaseModel):
     senkou_span_a: float = 0.0
     senkou_span_b: float = 0.0
 
+    # 일목균형표 이격도 (기준선 대비)
+    ichimoku_disparity: Optional[float] = None     # 이격도 (%)
+    ichimoku_disparity_score: int = 0              # 이격도 점수
+    ichimoku_disparity_optimal: bool = False       # 적정 이격도 여부
+    ichimoku_disparity_overheated: bool = False    # 과열 이격도 여부
+
     # 거래대금
     avg_trading_value: float = 0.0
 
@@ -106,6 +118,23 @@ class StockSignal(BaseModel):
     bonus_score: int = 0
     total_technical_score: int = 0
     active_patterns: List[str] = []
+
+    # 펀더멘탈 분석 필드
+    roe_score: int = 0
+    roe_value: Optional[float] = None  # 현재 ROE (%)
+    roe_consistent: bool = False
+
+    gpm_score: int = 0
+    gpm_value: Optional[float] = None  # 현재 GPM (%)
+
+    debt_score: int = 0
+    debt_ratio: Optional[float] = None  # 부채비율 (%)
+
+    capex_score: int = 0
+    capex_ratio: Optional[float] = None  # CapEx/순이익 비율 (%)
+
+    total_fundamental_score: int = 0
+    fundamental_patterns: List[str] = []
 
     class Config:
         from_attributes = True
@@ -144,6 +173,23 @@ class ScreeningResultCreate(BaseModel):
     cloud_breakout: bool
     golden_cross: bool
     avg_trading_value: float
+
+    # 일목균형표 이격도
+    ichimoku_disparity: Optional[float] = None
+    ichimoku_disparity_score: int = 0
+
+    # 기술적 분석 점수
+    bollinger_score: int = 0
+    ma_alignment_score: int = 0
+    cup_handle_score: int = 0
+    total_technical_score: int = 0
+
+    # 펀더멘탈 분석 점수
+    roe_score: int = 0
+    gpm_score: int = 0
+    debt_score: int = 0
+    capex_score: int = 0
+    total_fundamental_score: int = 0
 
 
 class ScreeningResult(ScreeningResultCreate):

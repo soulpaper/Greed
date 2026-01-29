@@ -17,9 +17,14 @@ from app.models.history_models import (
     RecordingStatusResponse,
     ManualRecordRequest,
     ManualRecordResponse,
+    TradeType,
+    TradeHistoryResponse,
+    TradeSummary,
+    TradeDetectionResult,
 )
 from app.services.history_service import get_history_service, HistoryService
 from app.services.recording_service import get_recording_service, RecordingService
+from app.services.trade_detection_service import get_trade_detection_service, TradeDetectionService
 from app.scheduler.scheduler_manager import get_scheduler_manager
 
 logger = logging.getLogger(__name__)
@@ -264,3 +269,95 @@ async def get_recording_logs(
     except Exception as e:
         logger.error(f"기록 로그 조회 실패: {str(e)}")
         raise HTTPException(status_code=500, detail=f"로그 조회 중 오류 발생: {str(e)}")
+
+
+# ============ 매매기록 API 엔드포인트 ============
+
+@router.get("/trades", response_model=TradeHistoryResponse)
+async def get_trade_records(
+    start_date: Optional[date] = Query(None, description="시작 날짜"),
+    end_date: Optional[date] = Query(None, description="종료 날짜"),
+    exchange: Optional[str] = Query(None, description="거래소 코드 (NASD, NYSE, AMEX, TKSE)"),
+    ticker: Optional[str] = Query(None, description="종목 코드"),
+    trade_type: Optional[TradeType] = Query(None, description="매매 유형 (BUY, SELL, NEW_BUY, FULL_SELL)"),
+    limit: int = Query(100, le=1000, description="조회 개수"),
+    offset: int = Query(0, ge=0, description="시작 위치"),
+    service: HistoryService = Depends(get_history_service)
+):
+    """
+    매매기록 조회
+
+    자동 감지된 매매기록을 조회합니다.
+
+    - **BUY**: 추가 매수 (금일 수량 > 전일 수량)
+    - **SELL**: 일부 매도 (금일 수량 < 전일 수량)
+    - **NEW_BUY**: 신규 매수 (전일에 없고 금일에 존재)
+    - **FULL_SELL**: 전량 매도 (전일에 있고 금일에 없거나 수량=0)
+    """
+    try:
+        records, total_count = await service.get_trade_records(
+            start_date=start_date,
+            end_date=end_date,
+            exchange=exchange,
+            ticker=ticker,
+            trade_type=trade_type,
+            limit=limit,
+            offset=offset
+        )
+
+        return TradeHistoryResponse(
+            records=records,
+            total_count=total_count,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        logger.error(f"매매기록 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"조회 중 오류 발생: {str(e)}")
+
+
+@router.get("/trades/summary/{trade_date}", response_model=TradeSummary)
+async def get_trade_summary(
+    trade_date: date,
+    exchange: Optional[str] = Query(None, description="거래소 코드"),
+    service: HistoryService = Depends(get_history_service)
+):
+    """
+    특정 날짜 매매 요약 조회
+
+    특정 날짜의 매매기록 요약 정보를 반환합니다.
+    """
+    try:
+        summary = await service.get_trade_summary(
+            trade_date=trade_date,
+            exchange=exchange
+        )
+        return summary
+    except Exception as e:
+        logger.error(f"매매 요약 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"요약 조회 중 오류 발생: {str(e)}")
+
+
+@router.post("/trades/detect", response_model=TradeDetectionResult)
+async def detect_trades_manual(
+    trade_date: date = Query(..., description="감지할 날짜"),
+    prev_date: Optional[date] = Query(None, description="비교 기준 날짜 (미지정 시 자동 조회)"),
+    exchange: Optional[str] = Query(None, description="거래소 코드"),
+    service: TradeDetectionService = Depends(get_trade_detection_service)
+):
+    """
+    수동 매매 감지 실행
+
+    특정 날짜의 매매기록을 수동으로 감지합니다.
+    기존 기록이 있으면 덮어씁니다.
+    """
+    try:
+        result = await service.detect_trades(
+            record_date=trade_date,
+            prev_date=prev_date,
+            exchange=exchange
+        )
+        return result
+    except Exception as e:
+        logger.error(f"수동 매매 감지 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"매매 감지 중 오류 발생: {str(e)}")

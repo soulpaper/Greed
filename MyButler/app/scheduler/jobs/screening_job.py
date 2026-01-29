@@ -53,38 +53,10 @@ async def run_daily_screening_async():
             limit=50
         )
 
-        # 결과 집계
-        all_signals = []
+        # 결과 집계 - StockSignal 그대로 사용 (필터별 점수 포함)
+        all_signals = result.strong_buy + result.buy + result.weak_buy
 
-        # IchimokuSignal 객체로 변환하여 저장
-        from app.services.ichimoku_service import IchimokuSignal, SignalStrength
-
-        for stock_signal in result.strong_buy + result.buy + result.weak_buy:
-            # StockSignal을 IchimokuSignal로 변환
-            signal = IchimokuSignal(
-                ticker=stock_signal.ticker,
-                name=stock_signal.name,
-                market=stock_signal.market,
-                current_price=stock_signal.current_price,
-                signal_strength=SignalStrength(stock_signal.signal_strength),
-                score=stock_signal.score,
-                price_above_cloud=stock_signal.price_above_cloud,
-                tenkan_above_kijun=stock_signal.tenkan_above_kijun,
-                chikou_above_price=stock_signal.chikou_above_price,
-                cloud_bullish=stock_signal.cloud_bullish,
-                cloud_breakout=stock_signal.cloud_breakout,
-                golden_cross=stock_signal.golden_cross,
-                thin_cloud=stock_signal.thin_cloud,
-                tenkan_sen=stock_signal.tenkan_sen,
-                kijun_sen=stock_signal.kijun_sen,
-                senkou_span_a=stock_signal.senkou_span_a,
-                senkou_span_b=stock_signal.senkou_span_b,
-                chikou_span=stock_signal.current_price,
-                avg_trading_value=stock_signal.avg_trading_value,
-            )
-            all_signals.append(signal)
-
-        # DB 저장
+        # DB 저장 (필터별 점수 포함)
         saved_count = await service.save_screening_results(all_signals)
 
         logger.info(f"일일 스크리닝 완료: {len(all_signals)}개 신호, {saved_count}개 저장")
@@ -131,36 +103,10 @@ async def run_manual_screening_async(
             limit=50
         )
 
-        # 결과 저장
+        # 결과 저장 (필터별 점수 포함)
         saved_count = 0
         if save_results:
-            from app.services.ichimoku_service import IchimokuSignal, SignalStrength
-
-            all_signals = []
-            for stock_signal in result.strong_buy + result.buy + result.weak_buy:
-                signal = IchimokuSignal(
-                    ticker=stock_signal.ticker,
-                    name=stock_signal.name,
-                    market=stock_signal.market,
-                    current_price=stock_signal.current_price,
-                    signal_strength=SignalStrength(stock_signal.signal_strength),
-                    score=stock_signal.score,
-                    price_above_cloud=stock_signal.price_above_cloud,
-                    tenkan_above_kijun=stock_signal.tenkan_above_kijun,
-                    chikou_above_price=stock_signal.chikou_above_price,
-                    cloud_bullish=stock_signal.cloud_bullish,
-                    cloud_breakout=stock_signal.cloud_breakout,
-                    golden_cross=stock_signal.golden_cross,
-                    thin_cloud=stock_signal.thin_cloud,
-                    tenkan_sen=stock_signal.tenkan_sen,
-                    kijun_sen=stock_signal.kijun_sen,
-                    senkou_span_a=stock_signal.senkou_span_a,
-                    senkou_span_b=stock_signal.senkou_span_b,
-                    chikou_span=stock_signal.current_price,
-                    avg_trading_value=stock_signal.avg_trading_value,
-                )
-                all_signals.append(signal)
-
+            all_signals = result.strong_buy + result.buy + result.weak_buy
             saved_count = await service.save_screening_results(all_signals)
 
         logger.info(f"수동 스크리닝 완료: {result.total_signals}개 신호")

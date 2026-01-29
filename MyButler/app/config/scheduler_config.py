@@ -21,19 +21,15 @@ class SchedulerConfig:
         self.timezone = pytz.timezone("Asia/Seoul")
         self.us_eastern = pytz.timezone("US/Eastern")
 
-        # 기본 실행 시간 (KST)
+        # ========== 해외주식 기록 설정 (미국 장 마감) ==========
         # DST 기간: 05:00 KST (미국 ET 16:00 = 장마감)
         # 표준시 기간: 06:00 KST (미국 ET 16:00 = 장마감)
         self.default_hour = 6
         self.default_minute = 0
 
-        # 재시도 설정
-        self.max_retries = 3
-        self.retry_interval_minutes = 5
-
-        # 작업 설정
-        self.job_id = "daily_stock_recording"
-        self.job_name = "일일 주식 변동 기록"
+        # 해외주식 작업 설정
+        self.job_id = "daily_overseas_recording"
+        self.job_name = "해외주식 일일 기록"
 
         # 대상 거래소 (미국 + 일본)
         self.target_exchanges = [
@@ -42,6 +38,19 @@ class SchedulerConfig:
             ("AMEX", "USD", "미국(아멕스)"),
             ("TKSE", "JPY", "일본"),
         ]
+
+        # ========== 국내주식 기록 설정 (한국 장 마감) ==========
+        # 한국 장 마감: 15:30 KST → 정산 후 15:40에 기록
+        self.domestic_hour = 15
+        self.domestic_minute = 40
+
+        # 국내주식 작업 설정
+        self.domestic_job_id = "daily_domestic_recording"
+        self.domestic_job_name = "국내주식 일일 기록"
+
+        # 재시도 설정
+        self.max_retries = 3
+        self.retry_interval_minutes = 5
 
     def get_apscheduler_config(self) -> Dict[str, Any]:
         """APScheduler 설정 반환"""

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Screening Service
-주식 스크리닝 서비스 (일목균형표 + 기술적 분석 필터 통합)
+주식 스크리닝 서비스 (일목균형표 + 기술적 분석 + 펀더멘탈 분석 필터 통합)
 """
 import logging
 from datetime import date, datetime
@@ -13,6 +13,7 @@ import pandas as pd
 from app.services.stock_data_service import get_stock_data_service, StockDataService
 from app.services.ichimoku_service import get_ichimoku_service, IchimokuService, IchimokuSignal, SignalStrength
 from app.services.technical_analysis.technical_service import get_technical_service, TechnicalService
+from app.services.fundamental_analysis.fundamental_service import get_fundamental_service, FundamentalService
 from app.models.screening_models import (
     StockSignal,
     ScreeningResponse,
@@ -21,6 +22,7 @@ from app.models.screening_models import (
     CombineMode,
 )
 from app.models.technical_models import TechnicalSignal
+from app.models.fundamental_models import FundamentalSignal
 from app.config.database_config import get_sqlite_connection
 from app.utils.timezone_utils import format_date_for_db, parse_date_from_db
 
@@ -40,10 +42,22 @@ class ScreeningService:
     # 기술적 분석 점수 임계값
     TECHNICAL_THRESHOLD = 40
 
+    # 펀더멘탈 분석 점수 임계값
+    FUNDAMENTAL_THRESHOLD = {
+        "roe": 15,
+        "gpm": 15,
+        "debt": 15,
+        "capex": 10,
+    }
+
+    # 펀더멘탈 필터 목록
+    FUNDAMENTAL_FILTERS = ["roe", "gpm", "debt", "capex"]
+
     def __init__(self):
         self.stock_data_service = get_stock_data_service()
         self.ichimoku_service = get_ichimoku_service()
         self.technical_service = get_technical_service()
+        self.fundamental_service = get_fundamental_service()
 
     def _signal_to_stock_signal(
         self,
@@ -70,6 +84,10 @@ class ScreeningService:
             kijun_sen=signal.kijun_sen,
             senkou_span_a=signal.senkou_span_a,
             senkou_span_b=signal.senkou_span_b,
+            ichimoku_disparity=signal.disparity,
+            ichimoku_disparity_score=signal.disparity_score,
+            ichimoku_disparity_optimal=signal.disparity_optimal,
+            ichimoku_disparity_overheated=signal.disparity_overheated,
             avg_trading_value=signal.avg_trading_value,
         )
 
@@ -155,6 +173,89 @@ class ScreeningService:
             total_technical_score=technical_signal.total_score,
             active_patterns=technical_signal.active_patterns,
         )
+
+    def _merge_fundamental_signal(
+        self,
+        stock_signal: StockSignal,
+        fundamental_signal: Optional[FundamentalSignal]
+    ) -> StockSignal:
+        """펀더멘탈 신호를 StockSignal에 병합"""
+        if fundamental_signal is None:
+            return stock_signal
+
+        # ROE 정보
+        if fundamental_signal.roe:
+            stock_signal.roe_score = fundamental_signal.roe.score
+            stock_signal.roe_value = fundamental_signal.roe.current_roe
+            stock_signal.roe_consistent = (
+                fundamental_signal.roe.is_consistent or
+                fundamental_signal.roe.is_highly_consistent
+            )
+
+        # GPM 정보
+        if fundamental_signal.gpm:
+            stock_signal.gpm_score = fundamental_signal.gpm.score
+            stock_signal.gpm_value = fundamental_signal.gpm.current_gpm
+
+        # Debt 정보
+        if fundamental_signal.debt:
+            stock_signal.debt_score = fundamental_signal.debt.score
+            stock_signal.debt_ratio = fundamental_signal.debt.current_debt_ratio
+
+        # CapEx 정보
+        if fundamental_signal.capex:
+            stock_signal.capex_score = fundamental_signal.capex.score
+            stock_signal.capex_ratio = fundamental_signal.capex.capex_to_income_ratio
+
+        # 통합 펀더멘탈 점수
+        stock_signal.total_fundamental_score = fundamental_signal.total_score
+        stock_signal.fundamental_patterns = fundamental_signal.active_patterns
+
+        return stock_signal
+
+    def _create_stock_signal_from_fundamental(
+        self,
+        fundamental_signal: FundamentalSignal
+    ) -> StockSignal:
+        """FundamentalSignal만으로 StockSignal 생성"""
+        stock_signal = StockSignal(
+            ticker=fundamental_signal.ticker,
+            name=fundamental_signal.name,
+            market=fundamental_signal.market,
+            current_price=fundamental_signal.current_price,
+            signal_strength="FUNDAMENTAL",
+            score=fundamental_signal.total_score,
+        )
+
+        # ROE 정보
+        if fundamental_signal.roe:
+            stock_signal.roe_score = fundamental_signal.roe.score
+            stock_signal.roe_value = fundamental_signal.roe.current_roe
+            stock_signal.roe_consistent = (
+                fundamental_signal.roe.is_consistent or
+                fundamental_signal.roe.is_highly_consistent
+            )
+
+        # GPM 정보
+        if fundamental_signal.gpm:
+            stock_signal.gpm_score = fundamental_signal.gpm.score
+            stock_signal.gpm_value = fundamental_signal.gpm.current_gpm
+
+        # Debt 정보
+        if fundamental_signal.debt:
+            stock_signal.debt_score = fundamental_signal.debt.score
+            stock_signal.debt_ratio = fundamental_signal.debt.current_debt_ratio
+
+        # CapEx 정보
+        if fundamental_signal.capex:
+            stock_signal.capex_score = fundamental_signal.capex.score
+            stock_signal.capex_ratio = fundamental_signal.capex.capex_to_income_ratio
+
+        # 통합 펀더멘탈 점수
+        stock_signal.total_fundamental_score = fundamental_signal.total_score
+        stock_signal.fundamental_patterns = fundamental_signal.active_patterns
+
+        return stock_signal
 
     def screen_us_stocks(
         self,
@@ -264,7 +365,8 @@ class ScreeningService:
 
         signals = []
         use_ichimoku = "ichimoku" in filters
-        technical_filters = [f for f in filters if f != "ichimoku"]
+        technical_filters = [f for f in filters if f != "ichimoku" and f not in self.FUNDAMENTAL_FILTERS]
+        fundamental_filters = [f for f in filters if f in self.FUNDAMENTAL_FILTERS]
 
         for ticker, df in stock_data.items():
             name = stock_names.get(ticker, ticker)
@@ -281,17 +383,24 @@ class ScreeningService:
                     df, ticker, name, market, technical_filters
                 )
 
+            # 펀더멘탈 분석
+            fundamental_signal = None
+            if fundamental_filters:
+                fundamental_signal = self.fundamental_service.analyze_stock_by_ticker(
+                    ticker, name, market, fundamental_filters
+                )
+
             # 조합 모드에 따른 필터링
             if combine_mode == "all":
                 # AND 모드: 모든 필터 통과 필요
                 if not self._passes_all_filters(
-                    ichimoku_signal, technical_signal, filters, min_score, perfect_only
+                    ichimoku_signal, technical_signal, fundamental_signal, filters, min_score, perfect_only
                 ):
                     continue
             else:
                 # OR 모드: 하나 이상 통과
                 if not self._passes_any_filter(
-                    ichimoku_signal, technical_signal, filters, min_score, perfect_only
+                    ichimoku_signal, technical_signal, fundamental_signal, filters, min_score, perfect_only
                 ):
                     continue
 
@@ -300,8 +409,14 @@ class ScreeningService:
                 stock_signal = self._signal_to_stock_signal(ichimoku_signal, technical_signal)
             elif technical_signal:
                 stock_signal = self._create_stock_signal_from_technical(technical_signal)
+            elif fundamental_signal:
+                stock_signal = self._create_stock_signal_from_fundamental(fundamental_signal)
             else:
                 continue
+
+            # 펀더멘탈 신호 병합
+            if fundamental_signal and (ichimoku_signal or technical_signal):
+                stock_signal = self._merge_fundamental_signal(stock_signal, fundamental_signal)
 
             # 보너스 점수 계산 및 적용
             if technical_signal and ichimoku_signal:
@@ -318,6 +433,7 @@ class ScreeningService:
         self,
         ichimoku: Optional[IchimokuSignal],
         technical: Optional[TechnicalSignal],
+        fundamental: Optional[FundamentalSignal],
         filters: List[str],
         min_score: int,
         perfect_only: bool
@@ -355,12 +471,38 @@ class ScreeningService:
                 if technical.cup_handle.score < self.TECHNICAL_THRESHOLD:
                     return False
 
+            # 펀더멘탈 필터
+            elif f == "roe":
+                if not fundamental or not fundamental.roe:
+                    return False
+                if fundamental.roe.score < self.FUNDAMENTAL_THRESHOLD["roe"]:
+                    return False
+
+            elif f == "gpm":
+                if not fundamental or not fundamental.gpm:
+                    return False
+                if fundamental.gpm.score < self.FUNDAMENTAL_THRESHOLD["gpm"]:
+                    return False
+
+            elif f == "debt":
+                if not fundamental or not fundamental.debt:
+                    return False
+                if fundamental.debt.score < self.FUNDAMENTAL_THRESHOLD["debt"]:
+                    return False
+
+            elif f == "capex":
+                if not fundamental or not fundamental.capex:
+                    return False
+                if fundamental.capex.score < self.FUNDAMENTAL_THRESHOLD["capex"]:
+                    return False
+
         return True
 
     def _passes_any_filter(
         self,
         ichimoku: Optional[IchimokuSignal],
         technical: Optional[TechnicalSignal],
+        fundamental: Optional[FundamentalSignal],
         filters: List[str],
         min_score: int,
         perfect_only: bool
@@ -391,6 +533,27 @@ class ScreeningService:
                 if technical and technical.cup_handle:
                     if (technical.cup_handle.cup_detected and
                         technical.cup_handle.score >= self.TECHNICAL_THRESHOLD):
+                        return True
+
+            # 펀더멘탈 필터
+            elif f == "roe":
+                if fundamental and fundamental.roe:
+                    if fundamental.roe.score >= self.FUNDAMENTAL_THRESHOLD["roe"]:
+                        return True
+
+            elif f == "gpm":
+                if fundamental and fundamental.gpm:
+                    if fundamental.gpm.score >= self.FUNDAMENTAL_THRESHOLD["gpm"]:
+                        return True
+
+            elif f == "debt":
+                if fundamental and fundamental.debt:
+                    if fundamental.debt.score >= self.FUNDAMENTAL_THRESHOLD["debt"]:
+                        return True
+
+            elif f == "capex":
+                if fundamental and fundamental.capex:
+                    if fundamental.capex.score >= self.FUNDAMENTAL_THRESHOLD["capex"]:
                         return True
 
         return False
@@ -482,7 +645,7 @@ class ScreeningService:
             "avg_score": round(sum(s.score for s in all_signals) / len(all_signals), 1) if all_signals else 0,
             "filters_used": filters,
             "combine_mode": combine_mode,
-            # 패턴별 통계
+            # 기술적 분석 패턴별 통계
             "bollinger_squeeze_count": len([s for s in all_signals if s.bollinger_squeeze]),
             "ma_alignment_count": len([s for s in all_signals if s.ma_perfect_alignment]),
             "cup_handle_count": len([s for s in all_signals if s.cup_handle_pattern]),
@@ -496,6 +659,14 @@ class ScreeningService:
             ])
             summary["cloud_breakouts"] = len([s for s in all_signals if s.cloud_breakout])
             summary["golden_crosses"] = len([s for s in all_signals if s.golden_cross])
+
+        # 펀더멘탈 관련 통계 (펀더멘탈 필터 사용 시)
+        has_fundamental = any(f in self.FUNDAMENTAL_FILTERS for f in filters)
+        if has_fundamental:
+            summary["roe_excellence_count"] = len([s for s in all_signals if s.roe_score >= 15])
+            summary["gpm_excellence_count"] = len([s for s in all_signals if s.gpm_score >= 15])
+            summary["low_debt_count"] = len([s for s in all_signals if s.debt_score >= 15])
+            summary["capital_efficient_count"] = len([s for s in all_signals if s.capex_score >= 10])
 
         return ScreeningResponse(
             screening_date=screening_date,
@@ -554,12 +725,108 @@ class ScreeningService:
             combine_mode="any"
         )
 
+    def run_fundamental_screening(
+        self,
+        market: MarketType = MarketType.ALL,
+        min_score: int = 40,
+        limit: int = 20,
+        filters: List[str] = None
+    ) -> ScreeningResponse:
+        """
+        펀더멘탈 분석 전용 스크리닝
+
+        Args:
+            market: 대상 시장
+            min_score: 최소 점수
+            limit: 결과 개수
+            filters: 펀더멘탈 필터 ["roe", "gpm", "debt", "capex"]
+        """
+        if filters is None:
+            filters = ["roe", "gpm", "debt", "capex"]
+
+        # 펀더멘탈 필터만 허용
+        valid_filters = [f for f in filters if f in self.FUNDAMENTAL_FILTERS]
+        if not valid_filters:
+            valid_filters = self.FUNDAMENTAL_FILTERS
+
+        return self.run_screening(
+            market=market,
+            min_score=min_score,
+            limit=limit,
+            filters=valid_filters,
+            combine_mode="any"
+        )
+
+    def run_roe_excellence_screening(
+        self,
+        market: MarketType = MarketType.ALL,
+        min_roe: float = 15.0,
+        require_consistency: bool = False,
+        limit: int = 20
+    ) -> ScreeningResponse:
+        """
+        ROE 우량 종목 스크리닝
+
+        Args:
+            market: 대상 시장
+            min_roe: 최소 ROE (%)
+            require_consistency: 일관성 요구 여부
+            limit: 결과 개수
+        """
+        # 기본 ROE 스크리닝 실행
+        response = self.run_screening(
+            market=market,
+            min_score=0,  # 점수 무관, ROE 직접 체크
+            limit=limit * 3,  # 여유있게 가져옴
+            filters=["roe"],
+            combine_mode="any"
+        )
+
+        # ROE 필터링
+        filtered_signals = []
+        for signal in response.strong_buy + response.buy + response.weak_buy:
+            if signal.roe_value is None:
+                continue
+            if signal.roe_value < min_roe:
+                continue
+            if require_consistency and not signal.roe_consistent:
+                continue
+            filtered_signals.append(signal)
+
+        # ROE 값으로 정렬
+        filtered_signals = sorted(filtered_signals, key=lambda x: x.roe_value or 0, reverse=True)
+
+        # 신호 강도별 재분류
+        strong_buy = []
+        buy = []
+        weak_buy = []
+
+        for signal in filtered_signals[:limit * 3]:
+            if signal.roe_score >= 25:
+                if len(strong_buy) < limit:
+                    strong_buy.append(signal)
+            elif signal.roe_score >= 15:
+                if len(buy) < limit:
+                    buy.append(signal)
+            else:
+                if len(weak_buy) < limit:
+                    weak_buy.append(signal)
+
+        response.strong_buy = strong_buy
+        response.buy = buy
+        response.weak_buy = weak_buy
+        response.total_signals = len(filtered_signals)
+        response.summary["min_roe_filter"] = min_roe
+        response.summary["require_consistency"] = require_consistency
+
+        return response
+
     async def save_screening_results(
         self,
-        signals: List[IchimokuSignal],
+        signals: List[StockSignal],
         screening_date: date = None
     ) -> int:
-        """스크리닝 결과 DB 저장"""
+        """스크리닝 결과 DB 저장 (필터별 점수 포함)"""
         if screening_date is None:
             screening_date = date.today()
 
@@ -573,8 +840,11 @@ class ScreeningService:
                     INSERT INTO screening_results
                     (screening_date, ticker, name, market, current_price, signal_strength,
                      score, price_above_cloud, tenkan_above_kijun, chikou_above_price,
-                     cloud_bullish, cloud_breakout, golden_cross, avg_trading_value)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     cloud_bullish, cloud_breakout, golden_cross, avg_trading_value,
+                     ichimoku_disparity, ichimoku_disparity_score,
+                     bollinger_score, ma_alignment_score, cup_handle_score, total_technical_score,
+                     roe_score, gpm_score, debt_score, capex_score, total_fundamental_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(screening_date, ticker) DO UPDATE SET
                         current_price = excluded.current_price,
                         signal_strength = excluded.signal_strength,
@@ -585,14 +855,25 @@ class ScreeningService:
                         cloud_bullish = excluded.cloud_bullish,
                         cloud_breakout = excluded.cloud_breakout,
                         golden_cross = excluded.golden_cross,
-                        avg_trading_value = excluded.avg_trading_value
+                        avg_trading_value = excluded.avg_trading_value,
+                        ichimoku_disparity = excluded.ichimoku_disparity,
+                        ichimoku_disparity_score = excluded.ichimoku_disparity_score,
+                        bollinger_score = excluded.bollinger_score,
+                        ma_alignment_score = excluded.ma_alignment_score,
+                        cup_handle_score = excluded.cup_handle_score,
+                        total_technical_score = excluded.total_technical_score,
+                        roe_score = excluded.roe_score,
+                        gpm_score = excluded.gpm_score,
+                        debt_score = excluded.debt_score,
+                        capex_score = excluded.capex_score,
+                        total_fundamental_score = excluded.total_fundamental_score
                 """, (
                     format_date_for_db(screening_date),
                     signal.ticker,
                     signal.name,
                     signal.market,
                     signal.current_price,
-                    signal.signal_strength.value,
+                    signal.signal_strength,
                     signal.score,
                     signal.price_above_cloud,
                     signal.tenkan_above_kijun,
@@ -601,11 +882,22 @@ class ScreeningService:
                     signal.cloud_breakout,
                     signal.golden_cross,
                     signal.avg_trading_value,
+                    signal.ichimoku_disparity,
+                    signal.ichimoku_disparity_score,
+                    signal.bollinger_score,
+                    signal.ma_alignment_score,
+                    signal.cup_handle_score,
+                    signal.total_technical_score,
+                    signal.roe_score,
+                    signal.gpm_score,
+                    signal.debt_score,
+                    signal.capex_score,
+                    signal.total_fundamental_score,
                 ))
                 saved_count += 1
 
             await conn.commit()
-            logger.info(f"스크리닝 결과 저장 완료: {saved_count}개")
+            logger.info(f"스크리닝 결과 저장 완료: {saved_count}개 (필터별 점수 포함)")
             return saved_count
 
         finally:

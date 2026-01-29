@@ -269,6 +269,111 @@ async def screen_cup_and_handle(
         raise HTTPException(status_code=500, detail=f"스크리닝 중 오류 발생: {str(e)}")
 
 
+# ============= 펀더멘탈 분석 엔드포인트 =============
+
+
+@router.get("/fundamental", response_model=ScreeningResponse)
+async def screen_fundamental(
+    market: MarketType = Query(default=MarketType.ALL, description="대상 시장"),
+    min_score: int = Query(default=40, ge=0, le=100, description="최소 점수"),
+    limit: int = Query(default=20, le=100, description="결과 개수"),
+    filters: List[str] = Query(default=["roe", "gpm", "debt", "capex"], description="펀더멘탈 필터"),
+    service: ScreeningService = Depends(get_screening_service)
+):
+    """
+    펀더멘탈 분석 스크리닝 (재무건전성 분석)
+
+    재무 지표 기반으로 우량 종목을 찾습니다.
+
+    **사용 가능한 필터:**
+    - roe: 자기자본이익률 (ROE)
+    - gpm: 매출총이익률 (GPM)
+    - debt: 부채비율
+    - capex: 자본적지출 비율 (CapEx/순이익)
+
+    **ROE 점수 (최대 30점):**
+    - ROE >= 20%: +15점
+    - ROE >= 15%: +10점
+    - ROE >= 10%: +5점
+    - 10년 표준편차 <= 3%: +10점
+    - 10년 표준편차 <= 5%: +5점
+    - 추세 상승: +5점 / 하락: -5점
+
+    **GPM 점수 (최대 25점):**
+    - GPM >= 50%: +15점
+    - GPM >= 40%: +10점
+    - GPM >= 30%: +5점
+    - 3년 연속 유지/상승: +10점
+
+    **부채비율 점수 (최대 25점):**
+    - 부채비율 <= 50%: +15점
+    - 부채비율 <= 100%: +10점
+    - 부채비율 <= 150%: +5점
+    - 부채비율 > 200%: -10점
+    - 5년 내 상환 가능: +10점
+    - 10년 내 상환 가능: +5점
+
+    **CapEx 점수 (최대 20점):**
+    - CapEx/순이익 < 15%: +15점
+    - CapEx/순이익 < 25%: +10점
+    - CapEx/순이익 < 35%: +5점
+    - CapEx/순이익 >= 50%: -10점
+    - 3년 평균 대비 안정적: +5점
+    """
+    try:
+        result = service.run_fundamental_screening(
+            market=market,
+            min_score=min_score,
+            limit=limit,
+            filters=filters
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"펀더멘탈 스크리닝 실패: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"스크리닝 중 오류 발생: {str(e)}")
+
+
+@router.get("/roe-excellence", response_model=ScreeningResponse)
+async def screen_roe_excellence(
+    market: MarketType = Query(default=MarketType.ALL, description="대상 시장"),
+    min_roe: float = Query(default=15.0, ge=0, le=100, description="최소 ROE (%)"),
+    require_consistency: bool = Query(default=False, description="일관성 요구 여부"),
+    limit: int = Query(default=20, le=100, description="결과 개수"),
+    service: ScreeningService = Depends(get_screening_service)
+):
+    """
+    ROE 우량 종목 스크리닝
+
+    높은 자기자본이익률(ROE)을 가진 종목을 찾습니다.
+
+    **파라미터:**
+    - min_roe: 최소 ROE (%, 기본 15%)
+    - require_consistency: True면 10년간 일관된 ROE를 보인 종목만 필터링
+
+    **일관성 기준:**
+    - 매우 일관적: 10년 표준편차 <= 3%
+    - 일관적: 10년 표준편차 <= 5%
+
+    **ROE 해석:**
+    - ROE >= 20%: 매우 우수 (자본 효율성 탁월)
+    - ROE >= 15%: 우수 (안정적 수익 창출)
+    - ROE >= 10%: 양호 (평균 이상)
+    """
+    try:
+        result = service.run_roe_excellence_screening(
+            market=market,
+            min_roe=min_roe,
+            require_consistency=require_consistency,
+            limit=limit
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"ROE 우량 스크리닝 실패: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"스크리닝 중 오류 발생: {str(e)}")
+
+
 # ============= 기존 엔드포인트 =============
 
 
@@ -386,6 +491,54 @@ async def get_screening_criteria():
                     "cup_depth": "15~40%",
                     "handle_depth": "5~15%"
                 }
+            },
+            "roe": {
+                "description": "자기자본이익률 (ROE) - 자본 효율성",
+                "max_score": 30,
+                "category": "fundamental",
+                "criteria": {
+                    "excellent": "ROE >= 20%",
+                    "good": "ROE >= 15%",
+                    "fair": "ROE >= 10%",
+                    "consistency_high": "10년 표준편차 <= 3%",
+                    "consistency": "10년 표준편차 <= 5%"
+                }
+            },
+            "gpm": {
+                "description": "매출총이익률 (GPM) - 가격 결정력",
+                "max_score": 25,
+                "category": "fundamental",
+                "criteria": {
+                    "excellent": "GPM >= 50%",
+                    "good": "GPM >= 40%",
+                    "fair": "GPM >= 30%",
+                    "stability": "3년 연속 유지/상승"
+                }
+            },
+            "debt": {
+                "description": "부채비율 - 재무 안정성",
+                "max_score": 25,
+                "category": "fundamental",
+                "criteria": {
+                    "excellent": "부채비율 <= 50%",
+                    "good": "부채비율 <= 100%",
+                    "fair": "부채비율 <= 150%",
+                    "poor": "부채비율 > 200% (감점)",
+                    "repay_5y": "순이익/부채 >= 20%",
+                    "repay_10y": "순이익/부채 >= 10%"
+                }
+            },
+            "capex": {
+                "description": "자본적지출 비율 (CapEx) - 자본 효율성",
+                "max_score": 20,
+                "category": "fundamental",
+                "criteria": {
+                    "excellent": "CapEx/순이익 < 15%",
+                    "good": "CapEx/순이익 < 25%",
+                    "fair": "CapEx/순이익 < 35%",
+                    "poor": "CapEx/순이익 >= 50% (감점)",
+                    "stability": "3년 평균 대비 20% 이내"
+                }
             }
         },
         "combine_modes": {
@@ -449,5 +602,41 @@ async def get_screening_criteria():
             "description": "여러 필터 동시 충족 시 보너스",
             "two_filters": "+10",
             "three_filters": "+20"
+        },
+        "roe_score_weights": {
+            "roe_above_20": 15,
+            "roe_above_15": 10,
+            "roe_above_10": 5,
+            "highly_consistent": 10,
+            "consistent": 5,
+            "trend_up": 5,
+            "trend_down": -5
+        },
+        "gpm_score_weights": {
+            "gpm_above_50": 15,
+            "gpm_above_40": 10,
+            "gpm_above_30": 5,
+            "three_year_stable": 10
+        },
+        "debt_score_weights": {
+            "debt_below_50": 15,
+            "debt_below_100": 10,
+            "debt_below_150": 5,
+            "debt_above_200": -10,
+            "repay_5_years": 10,
+            "repay_10_years": 5
+        },
+        "capex_score_weights": {
+            "capex_below_15": 15,
+            "capex_below_25": 10,
+            "capex_below_35": 5,
+            "capex_above_50": -10,
+            "stability": 5
+        },
+        "fundamental_bonus": {
+            "description": "다중 펀더멘탈 조건 충족 시 보너스",
+            "two_conditions": "+5",
+            "three_conditions": "+10",
+            "four_conditions": "+15"
         }
     }

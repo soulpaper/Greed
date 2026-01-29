@@ -71,7 +71,7 @@ run_screening(market, min_score, perfect_only, limit, filters, combine_mode)
 | `run_cup_handle_screening()` | market, min_score, limit | ScreeningResponse | 컵앤핸들 전용 |
 | `screen_us_stocks()` | min_score, perfect_only, max_workers, filters, combine_mode | (signals, scanned, passed) | 미국 주식 스크리닝 |
 | `screen_kr_stocks()` | min_score, perfect_only, market, max_workers, filters, combine_mode | (signals, scanned, passed) | 한국 주식 스크리닝 |
-| `save_screening_results()` | signals, screening_date | saved_count | DB 저장 (async) |
+| `save_screening_results()` | signals, screening_date | saved_count | DB 저장 (필터별 점수 포함, async) |
 | `get_screening_history()` | 필터 조건들 | (records, total_count) | 히스토리 조회 (async) |
 | `get_latest_recommendations()` | market, limit | Dict | 최신 추천 종목 (async) |
 
@@ -116,6 +116,18 @@ run_screening(market, min_score, perfect_only, limit, filters, combine_mode)
 | 양운 (선행A > 선행B) | +10 | -5 |
 | 구름대 돌파 (5일 내) | +15 | 0 |
 | 골든크로스 (5일 내) | +10 | 0 |
+| 이격도 (기준선 대비) | -20 ~ +10 | (아래 참조) |
+
+### 이격도 점수 (기준선 대비)
+
+| 이격도 범위 | 점수 | 설명 |
+|-------------|------|------|
+| 5% ~ 15% | +10 | 적정 이격도 (매수 적기) |
+| 0% ~ 5% | +5 | 저이격 (상승 여력) |
+| 15% ~ 20% | 0 | 약간 높음 (주의) |
+| > 20% | -10 ~ -20 | 과열 (조정 가능성) |
+| -10% ~ 0% | 0 | 음이격 (중립) |
+| < -10% | -5 ~ -15 | 과매도 (반등 가능하나 리스크) |
 
 **점수 범위**: -100 ~ 100
 

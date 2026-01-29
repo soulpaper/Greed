@@ -155,7 +155,7 @@ def init_sqlite_schema():
         )
     """)
 
-    # screening_results 테이블 (일목균형표 스크리닝 결과)
+    # screening_results 테이블 (스크리닝 결과 - 필터별 점수 포함)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS screening_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,8 +173,73 @@ def init_sqlite_schema():
             cloud_breakout BOOLEAN,
             golden_cross BOOLEAN,
             avg_trading_value DECIMAL(20, 8),
+
+            -- 일목균형표 이격도
+            ichimoku_disparity DECIMAL(10, 2),
+            ichimoku_disparity_score INTEGER DEFAULT 0,
+
+            -- 기술적 분석 점수
+            bollinger_score INTEGER DEFAULT 0,
+            ma_alignment_score INTEGER DEFAULT 0,
+            cup_handle_score INTEGER DEFAULT 0,
+            total_technical_score INTEGER DEFAULT 0,
+
+            -- 펀더멘탈 분석 점수
+            roe_score INTEGER DEFAULT 0,
+            gpm_score INTEGER DEFAULT 0,
+            debt_score INTEGER DEFAULT 0,
+            capex_score INTEGER DEFAULT 0,
+            total_fundamental_score INTEGER DEFAULT 0,
+
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(screening_date, ticker)
+        )
+    """)
+
+    # asset_tags 테이블 (태그 정의)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS asset_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name VARCHAR(50) NOT NULL UNIQUE,
+            category VARCHAR(30),
+            color VARCHAR(7) DEFAULT '#6B7280',
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # stock_tags 테이블 (종목-태그 매핑)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stock_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker VARCHAR(20) NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ticker, tag_id),
+            FOREIGN KEY (tag_id) REFERENCES asset_tags(id) ON DELETE CASCADE
+        )
+    """)
+
+    # trade_records 테이블 (매매기록 자동 감지)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date DATE NOT NULL,
+            exchange VARCHAR(10) NOT NULL,
+            currency VARCHAR(5) NOT NULL,
+            ticker VARCHAR(20) NOT NULL,
+            stock_name VARCHAR(100),
+            trade_type VARCHAR(20) NOT NULL,
+            prev_quantity DECIMAL(20, 8),
+            curr_quantity DECIMAL(20, 8),
+            quantity_change DECIMAL(20, 8) NOT NULL,
+            prev_price DECIMAL(20, 8),
+            curr_price DECIMAL(20, 8),
+            estimated_amount DECIMAL(20, 8),
+            prev_record_date DATE,
+            detection_method VARCHAR(20) DEFAULT 'AUTO',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(trade_date, exchange, ticker, trade_type)
         )
     """)
 
@@ -188,6 +253,38 @@ def init_sqlite_schema():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_screening_results_ticker ON screening_results(ticker)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_screening_results_market ON screening_results(market)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_screening_results_score ON screening_results(score)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_asset_tags_name ON asset_tags(name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_asset_tags_category ON asset_tags(category)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stock_tags_ticker ON stock_tags(ticker)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stock_tags_tag_id ON stock_tags(tag_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_date ON trade_records(trade_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_ticker ON trade_records(ticker)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_exchange ON trade_records(exchange)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_type ON trade_records(trade_type)")
+
+    # 마이그레이션: screening_results에 필터별 점수 컬럼 추가 (기존 DB 호환)
+    migration_columns = [
+        ("bollinger_score", "INTEGER DEFAULT 0"),
+        ("ma_alignment_score", "INTEGER DEFAULT 0"),
+        ("cup_handle_score", "INTEGER DEFAULT 0"),
+        ("total_technical_score", "INTEGER DEFAULT 0"),
+        ("roe_score", "INTEGER DEFAULT 0"),
+        ("gpm_score", "INTEGER DEFAULT 0"),
+        ("debt_score", "INTEGER DEFAULT 0"),
+        ("capex_score", "INTEGER DEFAULT 0"),
+        ("total_fundamental_score", "INTEGER DEFAULT 0"),
+        # 일목균형표 이격도
+        ("ichimoku_disparity", "DECIMAL(10, 2)"),
+        ("ichimoku_disparity_score", "INTEGER DEFAULT 0"),
+    ]
+
+    for col_name, col_type in migration_columns:
+        try:
+            cursor.execute(f"ALTER TABLE screening_results ADD COLUMN {col_name} {col_type}")
+            logger.info(f"컬럼 추가: screening_results.{col_name}")
+        except sqlite3.OperationalError:
+            # 이미 존재하는 컬럼
+            pass
 
     conn.commit()
     conn.close()

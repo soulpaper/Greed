@@ -53,6 +53,12 @@ class IchimokuSignal:
     senkou_span_b: float             # 선행스팬B
     chikou_span: float               # 후행스팬
 
+    # 이격도 (기준선 대비)
+    disparity: float                 # 이격도 (%)
+    disparity_score: int             # 이격도 점수
+    disparity_optimal: bool          # 적정 이격도 (5~15%)
+    disparity_overheated: bool       # 과열 이격도 (>20%)
+
     # 거래대금
     avg_trading_value: float         # 5일 평균 거래대금
 
@@ -80,6 +86,12 @@ class IchimokuSignal:
                 "senkou_span_b": self.senkou_span_b,
                 "chikou_span": self.chikou_span,
             },
+            "disparity": {
+                "value": self.disparity,
+                "score": self.disparity_score,
+                "is_optimal": self.disparity_optimal,
+                "is_overheated": self.disparity_overheated,
+            },
             "avg_trading_value": self.avg_trading_value,
         }
 
@@ -92,6 +104,12 @@ class IchimokuService:
     KIJUN_PERIOD = 26    # 기준선
     SENKOU_B_PERIOD = 52 # 선행스팬B
     DISPLACEMENT = 26    # 선행/후행 이동
+
+    # 이격도 기준 (기준선 대비)
+    DISPARITY_OPTIMAL_MIN = 5.0   # 적정 이격도 최소 (%)
+    DISPARITY_OPTIMAL_MAX = 15.0  # 적정 이격도 최대 (%)
+    DISPARITY_OVERHEATED = 20.0   # 과열 이격도 (%)
+    DISPARITY_OVERSOLD = -10.0    # 과매도 이격도 (%)
 
     def calculate_ichimoku(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -132,6 +150,9 @@ class IchimokuService:
 
         # 구름 두께
         df["cloud_thickness"] = abs(df["senkou_span_a"] - df["senkou_span_b"])
+
+        # 이격도 (기준선 대비)
+        df["disparity"] = ((df["Close"] - df["kijun_sen"]) / df["kijun_sen"]) * 100
 
         return df
 
@@ -202,6 +223,15 @@ class IchimokuService:
             current_thickness = current["cloud_thickness"]
             thin_cloud = current_thickness < avg_cloud_thickness * 0.5
 
+            # === 이격도 분석 ===
+            disparity = current["disparity"] if not pd.isna(current["disparity"]) else 0.0
+            disparity_optimal = self.DISPARITY_OPTIMAL_MIN <= disparity <= self.DISPARITY_OPTIMAL_MAX
+            disparity_overheated = disparity > self.DISPARITY_OVERHEATED
+            disparity_oversold = disparity < self.DISPARITY_OVERSOLD
+
+            # 이격도 점수 계산
+            disparity_score = self._calculate_disparity_score(disparity)
+
             # === 점수 계산 ===
             score = self._calculate_score(
                 price_above_cloud=price_above_cloud,
@@ -213,6 +243,7 @@ class IchimokuService:
                 current_price=current_price,
                 cloud_top=current["cloud_top"],
                 cloud_bottom=current["cloud_bottom"],
+                disparity_score=disparity_score,
             )
 
             # === 신호 강도 결정 ===
@@ -240,6 +271,10 @@ class IchimokuService:
                 senkou_span_a=round(current["senkou_span_a"], 2),
                 senkou_span_b=round(current["senkou_span_b"], 2),
                 chikou_span=round(current_price, 2),  # 현재가 = 후행스팬 현재값
+                disparity=round(disparity, 2),
+                disparity_score=disparity_score,
+                disparity_optimal=disparity_optimal,
+                disparity_overheated=disparity_overheated,
                 avg_trading_value=round(avg_trading_value, 2),
             )
 
@@ -289,6 +324,38 @@ class IchimokuService:
 
         return False
 
+    def _calculate_disparity_score(self, disparity: float) -> int:
+        """
+        이격도 점수 계산 (-20 ~ 15)
+
+        - 적정 이격도 (5~15%): +10점
+        - 약간 높음 (15~20%): 0점
+        - 과열 (>20%): -10점 ~ -20점
+        - 과매도 (<-10%): -5점 ~ -15점
+        - 저이격 (0~5%): +5점
+        - 음이격 (-10~0%): 0점
+        """
+        if self.DISPARITY_OPTIMAL_MIN <= disparity <= self.DISPARITY_OPTIMAL_MAX:
+            # 적정 이격도: 매수 적기
+            return 10
+        elif 0 <= disparity < self.DISPARITY_OPTIMAL_MIN:
+            # 저이격: 상승 여력 있음
+            return 5
+        elif self.DISPARITY_OPTIMAL_MAX < disparity <= self.DISPARITY_OVERHEATED:
+            # 약간 높음: 주의
+            return 0
+        elif disparity > self.DISPARITY_OVERHEATED:
+            # 과열: 조정 가능성
+            excess = disparity - self.DISPARITY_OVERHEATED
+            return max(-20, -10 - int(excess / 5) * 5)
+        elif self.DISPARITY_OVERSOLD <= disparity < 0:
+            # 음이격: 중립
+            return 0
+        else:
+            # 과매도: 반등 가능하나 리스크
+            deficit = abs(disparity) - abs(self.DISPARITY_OVERSOLD)
+            return max(-15, -5 - int(deficit / 5) * 5)
+
     def _calculate_score(
         self,
         price_above_cloud: bool,
@@ -300,6 +367,7 @@ class IchimokuService:
         current_price: float,
         cloud_top: float,
         cloud_bottom: float,
+        disparity_score: int = 0,
     ) -> int:
         """
         매수 점수 계산 (-100 ~ 100)
@@ -311,6 +379,7 @@ class IchimokuService:
         - 양운: 10점
         - 구름대 돌파: 15점 (보너스)
         - 골든크로스: 10점 (보너스)
+        - 이격도: -20 ~ +10점
         """
         score = 0
 
@@ -345,6 +414,9 @@ class IchimokuService:
 
         if golden_cross:
             score += 10
+
+        # 이격도 점수 추가
+        score += disparity_score
 
         # 범위 제한
         return max(-100, min(100, score))

@@ -16,6 +16,9 @@ from app.models.history_models import (
     RecordingLog,
     StockRecordCreate,
     SummaryRecordCreate,
+    TradeType,
+    TradeRecord,
+    TradeSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -456,6 +459,154 @@ class HistoryService:
                     error_message=row["error_message"]
                 ))
             return logs
+        finally:
+            await conn.close()
+
+    # ============ 매매기록 조회 메서드 ============
+
+    async def get_trade_records(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        exchange: Optional[str] = None,
+        ticker: Optional[str] = None,
+        trade_type: Optional[TradeType] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Tuple[List[TradeRecord], int]:
+        """매매기록 조회"""
+        conn = await get_sqlite_connection()
+        try:
+            cursor = await conn.cursor()
+
+            where_clauses = []
+            params = []
+
+            if start_date:
+                where_clauses.append("trade_date >= ?")
+                params.append(format_date_for_db(start_date))
+            if end_date:
+                where_clauses.append("trade_date <= ?")
+                params.append(format_date_for_db(end_date))
+            if exchange:
+                where_clauses.append("exchange = ?")
+                params.append(exchange)
+            if ticker:
+                where_clauses.append("ticker = ?")
+                params.append(ticker)
+            if trade_type:
+                where_clauses.append("trade_type = ?")
+                params.append(trade_type.value)
+
+            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+            # 총 개수 조회
+            await cursor.execute(f"SELECT COUNT(*) FROM trade_records WHERE {where_sql}", params)
+            total_count = (await cursor.fetchone())[0]
+
+            # 데이터 조회
+            await cursor.execute(f"""
+                SELECT * FROM trade_records
+                WHERE {where_sql}
+                ORDER BY trade_date DESC, exchange, ticker
+                LIMIT ? OFFSET ?
+            """, params + [limit, offset])
+
+            rows = await cursor.fetchall()
+            records = []
+            for row in rows:
+                records.append(TradeRecord(
+                    id=row["id"],
+                    trade_date=parse_date_from_db(row["trade_date"]),
+                    exchange=row["exchange"],
+                    currency=row["currency"],
+                    ticker=row["ticker"],
+                    stock_name=row["stock_name"],
+                    trade_type=TradeType(row["trade_type"]),
+                    prev_quantity=Decimal(str(row["prev_quantity"])) if row["prev_quantity"] else None,
+                    curr_quantity=Decimal(str(row["curr_quantity"])) if row["curr_quantity"] else None,
+                    quantity_change=Decimal(str(row["quantity_change"])),
+                    prev_price=Decimal(str(row["prev_price"])) if row["prev_price"] else None,
+                    curr_price=Decimal(str(row["curr_price"])) if row["curr_price"] else None,
+                    estimated_amount=Decimal(str(row["estimated_amount"])) if row["estimated_amount"] else None,
+                    prev_record_date=parse_date_from_db(row["prev_record_date"]) if row["prev_record_date"] else None,
+                    detection_method=row["detection_method"],
+                    created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
+                ))
+
+            return records, total_count
+        finally:
+            await conn.close()
+
+    async def get_trade_summary(
+        self,
+        trade_date: date,
+        exchange: Optional[str] = None
+    ) -> TradeSummary:
+        """특정 날짜의 매매 요약 조회"""
+        conn = await get_sqlite_connection()
+        try:
+            cursor = await conn.cursor()
+
+            if exchange:
+                await cursor.execute("""
+                    SELECT
+                        trade_type,
+                        COUNT(*) as count,
+                        SUM(ABS(estimated_amount)) as total_amount
+                    FROM trade_records
+                    WHERE trade_date = ? AND exchange = ?
+                    GROUP BY trade_type
+                """, [format_date_for_db(trade_date), exchange])
+            else:
+                await cursor.execute("""
+                    SELECT
+                        trade_type,
+                        COUNT(*) as count,
+                        SUM(ABS(estimated_amount)) as total_amount
+                    FROM trade_records
+                    WHERE trade_date = ?
+                    GROUP BY trade_type
+                """, [format_date_for_db(trade_date)])
+
+            rows = await cursor.fetchall()
+
+            new_buys = 0
+            additional_buys = 0
+            partial_sells = 0
+            full_sells = 0
+            total_buy_amount = Decimal("0")
+            total_sell_amount = Decimal("0")
+
+            for row in rows:
+                trade_type_val = row["trade_type"]
+                count = row["count"]
+                amount = Decimal(str(row["total_amount"])) if row["total_amount"] else Decimal("0")
+
+                if trade_type_val == TradeType.NEW_BUY.value:
+                    new_buys = count
+                    total_buy_amount += amount
+                elif trade_type_val == TradeType.BUY.value:
+                    additional_buys = count
+                    total_buy_amount += amount
+                elif trade_type_val == TradeType.SELL.value:
+                    partial_sells = count
+                    total_sell_amount += amount
+                elif trade_type_val == TradeType.FULL_SELL.value:
+                    full_sells = count
+                    total_sell_amount += amount
+
+            return TradeSummary(
+                trade_date=trade_date,
+                exchange=exchange,
+                total_trades=new_buys + additional_buys + partial_sells + full_sells,
+                new_buys=new_buys,
+                additional_buys=additional_buys,
+                partial_sells=partial_sells,
+                full_sells=full_sells,
+                total_buy_amount=total_buy_amount if total_buy_amount > 0 else None,
+                total_sell_amount=total_sell_amount if total_sell_amount > 0 else None,
+            )
         finally:
             await conn.close()
 
